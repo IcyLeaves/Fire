@@ -11,19 +11,19 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "DSP/Distortion.h"
 #include "DSP/Delay.h"
 #include "DSP/WidthProcessor.h"
-#include "Preset.h"
-#include "Multiband/FFTProcessor.h"
+#include "Panels/TopPanel/Preset.h"
+#include "Panels/SpectrogramPanel/FFTProcessor.h"
 #include "GUI/InterfaceDefines.h"
 #include "Utility/AudioHelpers.h"
+#include "DSP/ClippingFunctions.h"
+#include "DSP/DiodeWDF.h"
 
 //#include "GUI/LookAndFeel.h"
 //#define COLOUR1 Colour(244, 208, 63)
 //#define COLOUR6 Colour(45, 40, 40)
 //==============================================================================
-
 
 class FireAudioProcessor : public juce::AudioProcessor
 {
@@ -66,20 +66,15 @@ public:
     void getStateInformation(juce::MemoryBlock &destData) override;
     void setStateInformation(const void *data, int sizeInBytes) override;
 
-    // Rectification
-    void updateRectification(float rec, juce::SmoothedValue<float>& recSmoother, Distortion& distortionProcessor);
-
     // filter
     void updateFilter();
 
     bool isSlient(juce::AudioBuffer<float> buffer);
 
-    // new drive after protection
-    float getNewDrive(juce::String driveId);
-
     juce::AudioProcessorValueTreeState treeState;
     juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
 
+    void setHistoryArray(int bandIndex);
     juce::Array<float> getHistoryArrayL();
     juce::Array<float> getHistoryArrayR();
     
@@ -89,7 +84,8 @@ public:
     
     // FFT
     float * getFFTData();
-    int getFFTSize();//TMP!!!!!!!!!!!
+    int getNumBins();
+    int getFFTSize();
     bool isFFTBlockReady();
     void pushDataToFFT();
     void processFFT(float * tempFFTData);
@@ -103,17 +99,21 @@ public:
     // bypass
     bool getBypassedState();
     
-    // set preset id for vst3 init
-    void setPresetId(int presetID);
-    int getPresetId();
-    
     // get number of activated lines
     // int getLineNum();
-    void setLineNum(int lineNum);
+    void setLineNum();
     
     // VU meters
-    float getInputMeterLevel(int channel);
-    float getOutputMeterLevel(int channel);
+    float getInputMeterRMSLevel(int channel, juce::String bandName);
+    float getOutputMeterRMSLevel(int channel, juce::String bandName);
+    
+    // drive lookandfeel
+    float getReductionPrecent(juce::String safeId);
+    void setReductionPrecent(juce::String safeId, float reductionPrecent);
+    float getSampleMaxValue(juce::String safeId);
+    void setSampleMaxValue(juce::String safeId, float sampleMaxValue);
+    
+    float safeMode(float drive, juce::AudioBuffer<float>& buffer, juce::String safeID);
 private:
     //==============================================================================
     
@@ -132,16 +132,22 @@ private:
     SpectrumProcessor spectrum_processor;
 
     // dry audio buffer
-    juce::AudioBuffer<float> dryBuffer;
+    juce::AudioBuffer<float> mDryBuffer;
     // wet audio buffer
-    juce::AudioBuffer<float> wetBuffer;
+    juce::AudioBuffer<float> mWetBuffer;
     
     // dsp::AudioBlock<float> blockOutput;
     juce::dsp::ProcessSpec spec;
 
     // filter
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> filterIIR;
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> filterColor;
+    MonoChain leftChain;
+    MonoChain rightChain;
+
+    void updateLowCutFilters(const ChainSettings& chainSettings);
+    void updateHighCutFilters(const ChainSettings& chainSettings);
+    void updatePeakFilter(const ChainSettings& chainSettings);
+
+//    juce::dsp::ProcessorDuplicator<Filter, Coefficients> filterIIR;
 
     // fix the artifacts (also called zipper noise)
     //float previousGainInput;
@@ -159,13 +165,14 @@ private:
     float previousMix3 = 0.0f;
     float previousMix4 = 0.0f;
     float previousMix = 0.0f;
-    float previousColor = 0.0f;
-    float previousCutoff = 0.0f;
+    float previousLowcutFreq = 0.0f;
+    float previousHighcutFreq = 0.0f;
+    float previousPeakFreq = 0.0f;
     
-    float newDrive1 = 0.0f;
-    float newDrive2 = 0.0f;
-    float newDrive3 = 0.0f;
-    float newDrive4 = 0.0f;
+    float newDrive1 = 1.0f;
+    float newDrive2 = 1.0f;
+    float newDrive3 = 1.0f;
+    float newDrive4 = 1.0f;
 
     juce::SmoothedValue<float> driveSmoother1;
     juce::SmoothedValue<float> driveSmoother2;
@@ -189,25 +196,54 @@ private:
     juce::SmoothedValue<float> mixSmoother3;
     juce::SmoothedValue<float> mixSmoother4;
     juce::SmoothedValue<float> mixSmootherGlobal;
-    juce::SmoothedValue<float> colorSmoother;
-    juce::SmoothedValue<float> cutoffSmoother;
+    juce::SmoothedValue<float> lowcutFreqSmoother;
+    juce::SmoothedValue<float> highcutFreqSmoother;
+    juce::SmoothedValue<float> peakFreqSmoother;
     
     juce::SmoothedValue<float> centralSmoother;
     juce::SmoothedValue<float> normalSmoother;
 
     // DSP Processors
-    Distortion distortionProcessor1;
-    Distortion distortionProcessor2;
-    Distortion distortionProcessor3;
-    Distortion distortionProcessor4;
-    WidthProcessor widthProcessor;
-    juce::dsp::Compressor<float> compressorProcessor1;
-    juce::dsp::Compressor<float> compressorProcessor2;
-    juce::dsp::Compressor<float> compressorProcessor3;
-    juce::dsp::Compressor<float> compressorProcessor4;
+    WidthProcessor widthProcessor1;
+    WidthProcessor widthProcessor2;
+    WidthProcessor widthProcessor3;
+    WidthProcessor widthProcessor4;
+    
+    using GainProcessor         = juce::dsp::Gain<float>;
+    using BiasProcessor         = juce::dsp::Bias<float>;
+    using DriveProcessor        = juce::dsp::WaveShaper<float>;
+    using DCFilter              = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
+    using CompressorProcessor   = juce::dsp::Compressor<float>;
+    using DryWetMixer           = juce::dsp::DryWetMixer<float>;
+    
+    CompressorProcessor compressorProcessor1;
+    CompressorProcessor compressorProcessor2;
+    CompressorProcessor compressorProcessor3;
+    CompressorProcessor compressorProcessor4;
+    
+    DCFilter dcFilter1;
+    DCFilter dcFilter2;
+    DCFilter dcFilter3;
+    DCFilter dcFilter4;
+    
+    juce::dsp::ProcessorChain<GainProcessor, BiasProcessor, DriveProcessor, juce::dsp::WaveShaper<float, std::function<float (float)>>, BiasProcessor> overdrive1;
+    juce::dsp::ProcessorChain<GainProcessor, BiasProcessor, DriveProcessor, juce::dsp::WaveShaper<float, std::function<float (float)>>, BiasProcessor> overdrive2;
+    juce::dsp::ProcessorChain<GainProcessor, BiasProcessor, DriveProcessor, juce::dsp::WaveShaper<float, std::function<float (float)>>, BiasProcessor> overdrive3;
+    juce::dsp::ProcessorChain<GainProcessor, BiasProcessor, DriveProcessor, juce::dsp::WaveShaper<float, std::function<float (float)>>, BiasProcessor> overdrive4;
+    
+    GainProcessor gainProcessor1;
+    GainProcessor gainProcessor2;
+    GainProcessor gainProcessor3;
+    GainProcessor gainProcessor4;
+    GainProcessor gainProcessorGlobal;
+    
+    DryWetMixer dryWetMixer1{100};
+    DryWetMixer dryWetMixer2{100};
+    DryWetMixer dryWetMixer3{100};
+    DryWetMixer dryWetMixer4{100};
+    DryWetMixer dryWetMixerGlobal{100};
     
     // oversampling
-    std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;   // normal use 2x
     std::unique_ptr<juce::dsp::Oversampling<float>> oversamplingHQ[4]; // HQ use 4x
 
     int oversampleFactor = 1;
@@ -241,26 +277,40 @@ private:
                                           lowpass3, highpass3;
     
     juce::AudioBuffer<float> mBuffer1, mBuffer2, mBuffer3, mBuffer4;
-    juce::AudioBuffer<float> dryBuffer1, dryBuffer2, dryBuffer3, dryBuffer4;
-    bool multibandState1 = true;
-    bool multibandState2 = true;
-    bool multibandState3 = true;
-    bool multibandState4 = true;
     
-    bool multibandFocus1 = true;
-    bool multibandFocus2 = false;
-    bool multibandFocus3 = false;
-    bool multibandFocus4 = false;
+    bool multibandEnable1 = true;
+    bool multibandEnable2 = true;
+    bool multibandEnable3 = true;
+    bool multibandEnable4 = true;
+    
+    bool multibandSolo1 = false;
+    bool multibandSolo2 = false;
+    bool multibandSolo3 = false;
+    bool multibandSolo4 = false;
+    
+//    bool multibandFocus1 = true;
+//    bool multibandFocus2 = false;
+//    bool multibandFocus3 = false;
+//    bool multibandFocus4 = false;
 
-    void processDistortion(juce::String modeID, juce::String recID, juce::AudioBuffer<float>& buffer, int totalNumInputChannels, juce::SmoothedValue<float>& driveSmoother, juce::SmoothedValue<float>& recSmoother, Distortion& distortionProcessor);
+    bool shouldSetBlackMask(int index);
+    bool getSoloStateFromIndex(int index);
     
-    void setParams(juce::String modeID, juce::String driveID, juce::String safeID, juce::String outputID, juce::String mixID, juce::String biasID, juce::AudioBuffer<float>& buffer, Distortion& distortionProcessor, juce::SmoothedValue<float>& driveSmoother, juce::SmoothedValue<float>& outputSmoother, juce::SmoothedValue<float>& mixSmoother, juce::SmoothedValue<float>& biasSmoother);
+    void processOneBand(juce::AudioBuffer<float>& bandBuffer, juce::dsp::ProcessContextReplacing<float> context, juce::String modeID, juce::String driveID, juce::String safeID, juce::String biasID, juce::String recID, juce::dsp::ProcessorChain<GainProcessor, BiasProcessor, DriveProcessor, juce::dsp::WaveShaper<float, std::function<float (float)>>, BiasProcessor>& overdrive, juce::String outputID, GainProcessor& gainProcessor, juce::String threshID, juce::String ratioID, CompressorProcessor& compressorProcessor, int totalNumInputChannels, juce::SmoothedValue<float>& recSmoother, juce::SmoothedValue<float>& outputSmoother, juce::String mixID, juce::dsp::DryWetMixer<float>& dryWetMixer, juce::String widthID, WidthProcessor widthProcessor, DCFilter &dcFilter, juce::String widthBypassID, juce::String compBypassID);
+    
+    void processDistortion(juce::AudioBuffer<float>& bandBuffer, juce::String modeID, juce::String driveID, juce::String safeID, juce::String biasID, juce::String recID, juce::dsp::ProcessorChain<GainProcessor, BiasProcessor, DriveProcessor, juce::dsp::WaveShaper<float, std::function<float (float)>>, BiasProcessor>& overdrive, DCFilter& dcFilter);
+    
+    void processGain(juce::dsp::ProcessContextReplacing<float> context, juce::String outputID, GainProcessor& gainProcessor);
+    
+    void processCompressor(juce::dsp::ProcessContextReplacing<float> context, juce::String threshID, juce::String ratioID, CompressorProcessor& compressor);
     
     void normalize(juce::String modeID, juce::AudioBuffer<float>& buffer, int totalNumInputChannels, juce::SmoothedValue<float>& recSmoother, juce::SmoothedValue<float>& outputSmoother);
     
     // void compressorProcessor(float ratio, float thresh, juce::dsp::Compressor<float> compressorProcessor, juce::dsp::ProcessContextReplacing<float> &context);
     
-    void mixProcessor(juce::String mixId, juce::SmoothedValue<float> &mixSmoother, int totalNumInputChannels, juce::AudioBuffer<float> &buffer, juce::AudioBuffer<float> dryBuffer);
+    void mixDryWet(juce::AudioBuffer<float>& dryBuffer, juce::AudioBuffer<float>& wetBuffer, juce::String mixID, juce::dsp::DryWetMixer<float>& dryWetMixer, float latency);
+    
+    float mLatency = 0.0f;
     
     // Save size
     int editorWidth = INIT_WIDTH;
@@ -270,9 +320,42 @@ private:
     bool isBypassed = false;
     
     // VU meters
-    float mInputLeftSmoothed = 0;
-    float mInputRightSmoothed = 0;
-    float mOutputLeftSmoothed = 0;
-    float mOutputRightSmoothed = 0;
+    
+    void setLeftRightMeterRMSValues(juce::AudioBuffer<float> buffer, float& leftOutValue, float& rightOutValue);
+    float mInputLeftSmoothedGlobal = 0;
+    float mInputRightSmoothedGlobal = 0;
+    float mOutputLeftSmoothedGlobal = 0;
+    float mOutputRightSmoothedGlobal = 0;
+    
+    float mInputLeftSmoothedBand1 = 0;
+    float mInputRightSmoothedBand1 = 0;
+    float mOutputLeftSmoothedBand1 = 0;
+    float mOutputRightSmoothedBand1 = 0;
+    
+    float mInputLeftSmoothedBand2 = 0;
+    float mInputRightSmoothedBand2 = 0;
+    float mOutputLeftSmoothedBand2 = 0;
+    float mOutputRightSmoothedBand2 = 0;
+    
+    float mInputLeftSmoothedBand3 = 0;
+    float mInputRightSmoothedBand3 = 0;
+    float mOutputLeftSmoothedBand3 = 0;
+    float mOutputRightSmoothedBand3 = 0;
+    
+    float mInputLeftSmoothedBand4 = 0;
+    float mInputRightSmoothedBand4 = 0;
+    float mOutputLeftSmoothedBand4 = 0;
+    float mOutputRightSmoothedBand4 = 0;
+    
+    
+    // Drive lookandfeel
+    float mReductionPrecent1 = 1;
+    float mReductionPrecent2 = 1;
+    float mReductionPrecent3 = 1;
+    float mReductionPrecent4 = 1;
+    float mSampleMaxValue1 = 0;
+    float mSampleMaxValue2 = 0;
+    float mSampleMaxValue3 = 0;
+    float mSampleMaxValue4 = 0;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FireAudioProcessor)
 };
